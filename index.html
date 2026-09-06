@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>DOCX Flight Telemetry Visualizer</title>
+  <title>Визуализатор полётной телеметрии DOCX</title>
   
   <!-- Leaflet CSS & JS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -30,6 +30,87 @@
     
     .file-input-wrapper { display: flex; align-items: center; gap: 10px; }
     .export-buttons { display: flex; gap: 10px; }
+    .file-input-wrapper input[type="file"] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+    .file-select-button {
+      background: #2c3e50;
+      color: #fff;
+      padding: 8px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .file-select-button:hover { background: #34495e; }
+    .file-input-wrapper input[type="file"]:focus-visible + .file-select-button {
+      outline: 2px solid #2980b9;
+      outline-offset: 2px;
+    }
+    .selected-file-name {
+      max-width: 260px;
+      overflow: hidden;
+      color: #5d6d7e;
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .map-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .map-heading h3 { font-size: 14px; }
+    .popup-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      position: relative;
+      cursor: pointer;
+      user-select: none;
+      font-size: 12px;
+      font-weight: 600;
+      color: #2c3e50;
+    }
+    .popup-toggle input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+    .toggle-track {
+      position: relative;
+      width: 34px;
+      height: 18px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: #bdc3c7;
+      transition: background 0.2s ease;
+    }
+    .toggle-track::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+      transition: transform 0.2s ease;
+    }
+    .popup-toggle input:checked + .toggle-track { background: #2980b9; }
+    .popup-toggle input:checked + .toggle-track::after { transform: translateX(16px); }
+    .popup-toggle input:focus-visible + .toggle-track {
+      outline: 2px solid #2980b9;
+      outline-offset: 2px;
+    }
     
     button {
       background: #2c3e50; color: white; border: none; padding: 8px 14px;
@@ -123,12 +204,14 @@
   <!-- CONTROL TOOLBAR -->
   <div class="toolbar">
     <div class="file-input-wrapper">
-      <label for="docxFile"><b>Select DOCX File: </b></label>
+      <span><b>Файл DOCX:</b></span>
       <input type="file" id="docxFile" accept=".docx" />
+      <label for="docxFile" class="file-select-button">Выбрать файл</label>
+      <span id="selectedFileName" class="selected-file-name">Файл не выбран</span>
     </div>
     <div class="export-buttons">
-      <button onclick="exportAsPNG()">Export Image (PNG)</button>
-      <button onclick="exportAsPDF()">Export PDF</button>
+      <button onclick="exportAsPNG()">Экспорт в PNG</button>
+      <button onclick="exportAsPDF()">Экспорт в PDF</button>
     </div>
   </div>
 
@@ -136,41 +219,48 @@
   <div id="dashboard">
     <!-- EDITABLE FLIGHT NAME HEADER -->
     <div class="dashboard-header">
-      <input type="text" id="flightTitle" class="flight-title-input" value="Рис. 1. Фактическая траектория выполнения Circle-to-Land RWY22 рейс USA601" placeholder="Type Flight Name / Header Title Here..." />
+      <input type="text" id="flightTitle" class="flight-title-input" value="Рис. 1. Фактическая траектория выполнения Circle-to-Land RWY22 рейс USA601" placeholder="Введите название рейса или заголовок..." />
     </div>
 
     <div class="dashboard-grid">
       <!-- MAP PANEL -->
       <div>
-        <h3 style="font-size: 14px; margin-bottom: 10px;">Flight Track Map</h3>
+        <div class="map-heading">
+          <h3>Карта траектории полёта</h3>
+          <label class="popup-toggle" for="showPointDetails">
+            <input type="checkbox" id="showPointDetails" role="switch" />
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span>Показать данные всех точек</span>
+          </label>
+        </div>
         <div id="map"></div>
       </div>
 
       <!-- DATA & GRAPH PANEL -->
       <div class="right-pane">
         <div>
-          <h3 style="font-size: 14px; margin-bottom: 10px;">Telemetry Curves (Altitude & Speed)</h3>
+          <h3 style="font-size: 14px; margin-bottom: 10px;">Графики телеметрии (высота и скорость)</h3>
           <div class="chart-container">
             <canvas id="telemetryChart"></canvas>
           </div>
         </div>
 
         <div style="overflow-x:auto;">
-          <h3 style="font-size: 14px; margin-bottom: 10px;">Extracted Waypoints Data</h3>
+          <h3 style="font-size: 14px; margin-bottom: 10px;">Данные маршрутных точек</h3>
           <table id="dataTable">
             <thead>
               <tr>
-                <th>Point</th>
-                <th>Time</th>
-                <th>Lat</th>
-                <th>Lng</th>
-                <th>Alt (m)</th>
-                <th>Speed (km/h)</th>
-                <th>Description</th>
+                <th>Точка</th>
+                <th>Время</th>
+                <th>Широта</th>
+                <th>Долгота</th>
+                <th>Высота (м)</th>
+                <th>Скорость (км/ч)</th>
+                <th>Описание</th>
               </tr>
             </thead>
             <tbody id="tableBody">
-              <tr><td colspan="7">Upload a DOCX file to extract and display flight data.</td></tr>
+              <tr><td colspan="7">Загрузите файл DOCX, чтобы извлечь и отобразить данные полёта.</td></tr>
             </tbody>
           </table>
         </div>
@@ -181,16 +271,32 @@
   <script>
     let map, chart;
     let currentData = [];
+    let pointMarkers = [];
 
     // Initialize Leaflet Map with Canvas Renderer enabled (Prevents SVG transform offsets in export)
     function initMap() {
-      map = L.map('map', { preferCanvas: true }).setView([40.73, 72.28], 11);
+      map = L.map('map', { preferCanvas: true, zoomControl: false }).setView([40.73, 72.28], 11);
+      L.control.zoom({
+        zoomInTitle: 'Увеличить масштаб',
+        zoomOutTitle: 'Уменьшить масштаб'
+      }).addTo(map);
       L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
         attribution: 'Esri, Maxar',
         crossOrigin: true
       }).addTo(map);
     }
     initMap();
+
+    // Show or hide every point popup without affecting click-to-open behavior.
+    document.getElementById('showPointDetails').addEventListener('change', function() {
+      pointMarkers.forEach(marker => {
+        if (this.checked) {
+          marker.openPopup();
+        } else {
+          marker.closePopup();
+        }
+      });
+    });
 
     // Clean numerical values extracted from strings
     function cleanNum(val) {
@@ -202,6 +308,7 @@
     // DOCX File Parsing Engine
     document.getElementById('docxFile').addEventListener('change', function(e) {
       const file = e.target.files[0];
+      document.getElementById('selectedFileName').textContent = file ? file.name : 'Файл не выбран';
       if (!file) return;
 
       const reader = new FileReader();
@@ -211,7 +318,8 @@
             parseDocxTable(result.value);
           })
           .catch(function(err) {
-            alert("Error parsing DOCX file: " + err.message);
+            console.error('Ошибка при обработке файла DOCX:', err);
+            alert("Не удалось обработать файл DOCX. Убедитесь, что файл не повреждён, и попробуйте снова.");
           });
       };
       reader.readAsArrayBuffer(file);
@@ -224,7 +332,7 @@
       const rows = tempDiv.querySelectorAll('tr');
 
       if (rows.length < 2) {
-        alert("No valid data table found inside the DOCX file.");
+        alert("В файле DOCX не найдена таблица с корректными данными.");
         return;
       }
 
@@ -274,6 +382,7 @@
           map.removeLayer(layer);
         }
       });
+      pointMarkers = [];
 
       const coords = currentData
         .filter(pt => pt.lat !== 0 && pt.lng !== 0)
@@ -301,12 +410,13 @@
           });
 
           const marker = L.marker([pt.lat, pt.lng], { icon: icon }).addTo(map);
+          pointMarkers.push(marker);
 
           const compactContent = `
             <div class="compact-badge">
               <div class="time">${pt.time}</div>
-              <div class="alt">~ ${pt.alt} m</div>
-              <div class="speed">${pt.speed} km/h</div>
+              <div class="alt">~ ${pt.alt} м</div>
+              <div class="speed">${pt.speed} км/ч</div>
             </div>
           `;
 
@@ -315,7 +425,11 @@
             closeOnClick: false,
             closeButton: false,
             offset: [12, -2]
-          }).openPopup();
+          });
+
+          if (document.getElementById('showPointDetails').checked) {
+            marker.openPopup();
+          }
         });
       }
 
@@ -328,7 +442,7 @@
           labels: currentData.map(pt => pt.point),
           datasets: [
             {
-              label: 'Altitude (m)',
+              label: 'Высота (м)',
               data: currentData.map(pt => pt.alt),
               borderColor: '#2980b9',
               backgroundColor: 'rgba(41, 128, 185, 0.1)',
@@ -337,7 +451,7 @@
               tension: 0.2
             },
             {
-              label: 'Speed (km/h)',
+              label: 'Скорость (км/ч)',
               data: currentData.map(pt => pt.speed),
               borderColor: '#e67e22',
               yAxisID: 'ySpeed',
@@ -349,8 +463,8 @@
           responsive: true,
           maintainAspectRatio: false,
           scales: {
-            yAlt: { type: 'linear', position: 'left', title: { display: true, text: 'Altitude (m)' } },
-            ySpeed: { type: 'linear', position: 'right', title: { display: true, text: 'Speed (km/h)' }, grid: { drawOnChartArea: false } }
+            yAlt: { type: 'linear', position: 'left', title: { display: true, text: 'Высота (м)' } },
+            ySpeed: { type: 'linear', position: 'right', title: { display: true, text: 'Скорость (км/ч)' }, grid: { drawOnChartArea: false } }
           }
         }
       });
@@ -382,20 +496,41 @@
     async function exportAsPDF() {
       await prepareCapture();
       const dashboard = document.getElementById('dashboard');
-      html2canvas(dashboard, { 
+      const canvas = await html2canvas(dashboard, {
         useCORS: true, 
         allowTaint: true,
-        scale: 2 
-      }).then(canvas => {
-        const imgData = canvas.toDataURL('image/png');
-        const { jsPDF } = window.jspdf;
-        const pdf = new jsPDF('landscape', 'mm', 'a4');
-        const imgWidth = 280;
-        const imgHeight = (canvas.height * imgWidth) / canvas.width;
-        
-        pdf.addImage(imgData, 'PNG', 10, 10, imgWidth, imgHeight);
-        pdf.save('flight_analysis.pdf');
+        scale: 2,
+        backgroundColor: '#ffffff'
       });
+
+      const { jsPDF } = window.jspdf;
+      const margin = 10;
+      const a4Portrait = { width: 210, height: 297 };
+      const a4Landscape = { width: 297, height: 210 };
+
+      const portraitScale = Math.min(
+        (a4Portrait.width - margin * 2) / canvas.width,
+        (a4Portrait.height - margin * 2) / canvas.height
+      );
+      const landscapeScale = Math.min(
+        (a4Landscape.width - margin * 2) / canvas.width,
+        (a4Landscape.height - margin * 2) / canvas.height
+      );
+      const orientation = portraitScale >= landscapeScale ? 'portrait' : 'landscape';
+      const pdf = new jsPDF(orientation, 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const scale = Math.min(
+        (pageWidth - margin * 2) / canvas.width,
+        (pageHeight - margin * 2) / canvas.height
+      );
+      const imgWidth = canvas.width * scale;
+      const imgHeight = canvas.height * scale;
+      const x = (pageWidth - imgWidth) / 2;
+      const y = (pageHeight - imgHeight) / 2;
+
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, imgWidth, imgHeight);
+      pdf.save('flight_analysis.pdf');
     }
   </script>
 </body>
