@@ -14,9 +14,10 @@
   <!-- Mammoth.js for parsing DOCX -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   
-  <!-- Export Libraries: html2canvas & jsPDF -->
+  <!-- Export Libraries: html2canvas, jsPDF & JSZip -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -212,6 +213,7 @@
     <div class="export-buttons">
       <button onclick="exportAsPNG()">Экспорт в PNG</button>
       <button onclick="exportAsPDF()">Экспорт в PDF</button>
+      <button onclick="exportAsDOCX()">Экспорт в DOCX</button>
     </div>
   </div>
 
@@ -531,6 +533,298 @@
 
       pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, imgWidth, imgHeight);
       pdf.save('flight_analysis.pdf');
+    }
+
+    function escapeXml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&apos;'
+      })[char]);
+    }
+
+    function wordTextXml(value) {
+      return escapeXml(value)
+        .split(/\r?\n/)
+        .map((line, index) => `${index > 0 ? '<w:br/>' : ''}<w:t xml:space="preserve">${line}</w:t>`)
+        .join('');
+    }
+
+    function fitWordImage(width, height, maxWidthTwips, maxHeightTwips) {
+      const scale = Math.min(maxWidthTwips / width, maxHeightTwips / height);
+      return {
+        widthEmu: Math.round(width * scale * 635),
+        heightEmu: Math.round(height * scale * 635)
+      };
+    }
+
+    function wordDrawingXml(relationshipId, documentPropertyId, name, description, size) {
+      return `<w:r>
+        <w:drawing>
+          <wp:inline distT="0" distB="0" distL="0" distR="0">
+            <wp:extent cx="${size.widthEmu}" cy="${size.heightEmu}"/>
+            <wp:docPr id="${documentPropertyId}" name="${escapeXml(name)}" descr="${escapeXml(description)}"/>
+            <wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic>
+                  <pic:nvPicPr>
+                    <pic:cNvPr id="0" name="${escapeXml(name)}"/>
+                    <pic:cNvPicPr/>
+                  </pic:nvPicPr>
+                  <pic:blipFill>
+                    <a:blip r:embed="${relationshipId}"/>
+                    <a:stretch><a:fillRect/></a:stretch>
+                  </pic:blipFill>
+                  <pic:spPr>
+                    <a:xfrm>
+                      <a:off x="0" y="0"/>
+                      <a:ext cx="${size.widthEmu}" cy="${size.heightEmu}"/>
+                    </a:xfrm>
+                    <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                  </pic:spPr>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>
+      </w:r>`;
+    }
+
+    function wordTableCellXml(value, width, options = {}) {
+      const isHeader = options.header === true;
+      const alignment = options.align || 'center';
+      const fill = isHeader ? '2C3E50' : (options.fill || 'FFFFFF');
+      return `<w:tc>
+        <w:tcPr>
+          <w:tcW w:w="${width}" w:type="dxa"/>
+          <w:shd w:val="clear" w:color="auto" w:fill="${fill}"/>
+          <w:vAlign w:val="center"/>
+        </w:tcPr>
+        <w:p>
+          <w:pPr>
+            <w:jc w:val="${alignment}"/>
+            <w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>
+          </w:pPr>
+          <w:r>
+            <w:rPr>
+              <w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Arial" w:cs="Arial"/>
+              ${isHeader ? '<w:b/><w:color w:val="FFFFFF"/>' : '<w:color w:val="1A252F"/>'}
+              <w:sz w:val="18"/><w:szCs w:val="18"/>
+            </w:rPr>
+            ${wordTextXml(value)}
+          </w:r>
+        </w:p>
+      </w:tc>`;
+    }
+
+    // Package editable text and table data with map/chart images as a Word DOCX document.
+    async function createDashboardDocx(options) {
+      const {
+        title,
+        mapImageBase64,
+        mapWidth,
+        mapHeight,
+        chartImageBase64,
+        chartWidth,
+        chartHeight,
+        rows
+      } = options;
+
+      // Landscape A4 dimensions and 10 mm margins in twips (1/1440 inch).
+      const pageWidth = 16838;
+      const pageHeight = 11906;
+      const margin = 567;
+      const contentWidth = pageWidth - margin * 2;
+      const visualColumnWidth = Math.floor(contentWidth / 2);
+      const mapSize = fitWordImage(mapWidth, mapHeight, 7400, 8300);
+      const chartSize = fitWordImage(chartWidth, chartHeight, 7400, 8300);
+      const columns = [
+        { label: 'Точка', key: 'point', width: 1000, align: 'center' },
+        { label: 'Время', key: 'time', width: 1400, align: 'center' },
+        { label: 'Широта', key: 'lat', width: 1450, align: 'center' },
+        { label: 'Долгота', key: 'lng', width: 1450, align: 'center' },
+        { label: 'Высота (м)', key: 'alt', width: 1400, align: 'center' },
+        { label: 'Скорость (км/ч)', key: 'speed', width: 1700, align: 'center' },
+        { label: 'Описание', key: 'desc', width: 7304, align: 'left' }
+      ];
+
+      const headerRow = `<w:tr>
+        <w:trPr><w:tblHeader/></w:trPr>
+        ${columns.map(column => wordTableCellXml(column.label, column.width, { header: true })).join('')}
+      </w:tr>`;
+      const dataRows = rows.map((row, rowIndex) => {
+        const fill = rowIndex % 2 === 0 ? 'FFFFFF' : 'F4F7F9';
+        return `<w:tr>
+          <w:trPr><w:cantSplit/></w:trPr>
+          ${columns.map(column => wordTableCellXml(row[column.key], column.width, {
+            align: column.align,
+            fill
+          })).join('')}
+        </w:tr>`;
+      }).join('');
+
+      const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+          <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+          <Default Extension="xml" ContentType="application/xml"/>
+          <Default Extension="png" ContentType="image/png"/>
+          <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+          <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+        </Types>`;
+
+      const packageRelationships = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+        </Relationships>`;
+
+      const documentRelationships = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/map.png"/>
+          <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/chart.png"/>
+          <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+        </Relationships>`;
+
+      const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:docDefaults>
+            <w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Arial" w:cs="Arial"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:rPrDefault>
+            <w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault>
+          </w:docDefaults>
+          <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+            <w:name w:val="Normal"/><w:qFormat/>
+          </w:style>
+          <w:style w:type="paragraph" w:styleId="Title">
+            <w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>
+            <w:pPr><w:spacing w:after="240"/><w:keepNext/></w:pPr>
+            <w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Arial" w:cs="Arial"/><w:b/><w:color w:val="000000"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr>
+          </w:style>
+          <w:style w:type="paragraph" w:styleId="Heading1">
+            <w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>
+            <w:pPr><w:spacing w:before="120" w:after="120"/><w:keepNext/></w:pPr>
+            <w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Arial" w:cs="Arial"/><w:b/><w:color w:val="000000"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>
+          </w:style>
+        </w:styles>`;
+
+      const mapDrawing = wordDrawingXml(
+        'rId1', 1, 'map.png', 'Карта траектории полёта', mapSize
+      );
+      const chartDrawing = wordDrawingXml(
+        'rId2', 2, 'chart.png', 'Графики высоты и скорости', chartSize
+      );
+      const visualCell = (heading, drawing) => `<w:tc>
+        <w:tcPr><w:tcW w:w="${visualColumnWidth}" w:type="dxa"/><w:vAlign w:val="top"/></w:tcPr>
+        <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r>${wordTextXml(heading)}</w:r></w:p>
+        <w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="0"/></w:pPr>${drawing}</w:p>
+      </w:tc>`;
+
+      const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <w:document
+          xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+          xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+          xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+          <w:body>
+            <w:p>
+              <w:pPr><w:pStyle w:val="Title"/></w:pPr>
+              <w:r>${wordTextXml(title || 'Анализ полёта')}</w:r>
+            </w:p>
+            <w:tbl>
+              <w:tblPr>
+                <w:tblW w:w="${contentWidth}" w:type="dxa"/>
+                <w:tblLayout w:type="fixed"/>
+                <w:tblBorders>
+                  <w:top w:val="nil"/><w:left w:val="nil"/><w:bottom w:val="nil"/><w:right w:val="nil"/>
+                  <w:insideH w:val="nil"/><w:insideV w:val="nil"/>
+                </w:tblBorders>
+                <w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tblCellMar>
+              </w:tblPr>
+              <w:tblGrid><w:gridCol w:w="${visualColumnWidth}"/><w:gridCol w:w="${visualColumnWidth}"/></w:tblGrid>
+              <w:tr><w:trPr><w:cantSplit/></w:trPr>
+                ${visualCell('Карта траектории полёта', mapDrawing)}
+                ${visualCell('Графики телеметрии', chartDrawing)}
+              </w:tr>
+            </w:tbl>
+            <w:p><w:r><w:br w:type="page"/></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r>${wordTextXml('Данные маршрутных точек')}</w:r></w:p>
+            <w:tbl>
+              <w:tblPr>
+                <w:tblW w:w="${contentWidth}" w:type="dxa"/>
+                <w:tblLayout w:type="fixed"/>
+                <w:tblBorders>
+                  <w:top w:val="single" w:sz="6" w:color="D9D9D9"/>
+                  <w:left w:val="single" w:sz="6" w:color="D9D9D9"/>
+                  <w:bottom w:val="single" w:sz="6" w:color="D9D9D9"/>
+                  <w:right w:val="single" w:sz="6" w:color="D9D9D9"/>
+                  <w:insideH w:val="single" w:sz="6" w:color="D9D9D9"/>
+                  <w:insideV w:val="single" w:sz="6" w:color="D9D9D9"/>
+                </w:tblBorders>
+                <w:tblCellMar><w:top w:w="100" w:type="dxa"/><w:left w:w="100" w:type="dxa"/><w:bottom w:w="100" w:type="dxa"/><w:right w:w="100" w:type="dxa"/></w:tblCellMar>
+              </w:tblPr>
+              <w:tblGrid>${columns.map(column => `<w:gridCol w:w="${column.width}"/>`).join('')}</w:tblGrid>
+              ${headerRow}
+              ${dataRows}
+            </w:tbl>
+            <w:sectPr>
+              <w:pgSz w:w="${pageWidth}" w:h="${pageHeight}" w:orient="landscape"/>
+              <w:pgMar w:top="${margin}" w:right="${margin}" w:bottom="${margin}" w:left="${margin}" w:header="284" w:footer="284" w:gutter="0"/>
+            </w:sectPr>
+          </w:body>
+        </w:document>`;
+
+      const zip = new JSZip();
+      zip.file('[Content_Types].xml', contentTypes);
+      zip.file('_rels/.rels', packageRelationships);
+      zip.file('word/document.xml', documentXml);
+      zip.file('word/styles.xml', stylesXml);
+      zip.file('word/_rels/document.xml.rels', documentRelationships);
+      zip.file('word/media/map.png', mapImageBase64, { base64: true });
+      zip.file('word/media/chart.png', chartImageBase64, { base64: true });
+
+      return zip.generateAsync({
+        type: 'blob',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        compression: 'DEFLATE'
+      });
+    }
+
+    // Export Dashboard to a Word DOCX Document
+    async function exportAsDOCX() {
+      if (typeof JSZip === 'undefined') {
+        alert('Не удалось загрузить модуль экспорта DOCX. Проверьте подключение к интернету и попробуйте снова.');
+        return;
+      }
+
+      await prepareCapture();
+      const captureOptions = {
+        useCORS: true,
+        allowTaint: true,
+        scale: 2,
+        backgroundColor: '#ffffff'
+      };
+      const [mapCanvas, chartCanvas] = await Promise.all([
+        html2canvas(document.getElementById('map'), captureOptions),
+        html2canvas(document.querySelector('.chart-container'), captureOptions)
+      ]);
+      const blob = await createDashboardDocx({
+        title: document.getElementById('flightTitle').value.trim(),
+        mapImageBase64: mapCanvas.toDataURL('image/png').split(',')[1],
+        mapWidth: mapCanvas.width,
+        mapHeight: mapCanvas.height,
+        chartImageBase64: chartCanvas.toDataURL('image/png').split(',')[1],
+        chartWidth: chartCanvas.width,
+        chartHeight: chartCanvas.height,
+        rows: currentData
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'analiz_poleta.docx';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
   </script>
 </body>
